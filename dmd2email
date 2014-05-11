@@ -1,0 +1,101 @@
+#!/usr/bin/python3
+
+from urllib.request import urlopen
+from json import loads as parseJSON
+from json import dumps as toJSON
+from email.mime.text import MIMEText
+from subprocess import Popen, PIPE
+from argparse import ArgumentParser
+from xdg import BaseDirectory
+import os
+
+URL = "http://udd.debian.org/dmd/?email1=%s&format=json"
+DEBUG_LEVEL = 0
+EMAIL_TAG = "[UDD]"
+
+
+def debug(level, msg):
+    if level <= DEBUG_LEVEL:
+        print(" debug [%s] - %s" % (level, msg))
+
+
+def main():
+    global DEBUG_LEVEL
+    argparse = ArgumentParser(prog="dmd2email")
+    argparse.add_argument(
+        '-D', '--debug', type=int, default=0,
+        help="set debug level")
+    argparse.add_argument(
+        "maintainer",
+        help="the maintainer email to check over udd")
+    argparse.add_argument(
+        "email",
+        help="the email address to send info")
+
+    args = argparse.parse_args()
+    DEBUG_LEVEL = args.debug
+
+    dump_file = os.path.join(BaseDirectory.save_cache_path("dmd2email"),
+                             args.maintainer)
+
+    first_run = False
+    if not os.path.exists(dump_file):
+        first_run = True
+        open(dump_file, 'a').close()
+    url = URL % args.maintainer
+    debug(1, "open url %s" % url)
+    json = parseJSON(urlopen(url).read().decode('utf-8'))
+    debug(2, "read data %s" % json)
+
+    current_status = {}
+    for element in json:
+        current_status[element[':shortname']] = element
+
+    if first_run:
+        debug(1, 'first run, save data and exit')
+        with open(dump_file, 'w') as fd:
+            fd.write(toJSON(current_status, indent=4))
+        exit(0)
+
+    db = open(dump_file).read()
+    try:
+        db = parseJSON(db)
+    except:
+        db = {}
+
+    found_new = False
+    for key in current_status:
+        if key not in db:
+            found_new = True
+            db[key] = current_status[key]
+            body = []
+            for data in current_status[key]:
+                if data != ":shortname":
+                    body.append("{0}: {1}"
+                                .format(data.replace(':', '', 1),
+                                current_status[key][data]))
+            body.append('\nMaintainer dashboard: %s' %
+                        url.replace('&format=json', ''))
+
+            msg = MIMEText('\n'.join(body))
+            msg["To"] = args.email
+            msg["Subject"] = "%s %s: %s" % (
+                             EMAIL_TAG,
+                             current_status[key][':source'],
+                             current_status[key][':description'])
+
+            p = Popen(["/usr/sbin/sendmail", "-t"], stdin=PIPE)
+            p.communicate(msg.as_string().encode('utf-8'))
+            debug(1, "find new %s" % msg['Subject'])
+
+    if not found_new:
+        debug(1, "no new object found")
+    else:
+        debug(1, "saving new data")
+        with open(dump_file, 'w') as fd:
+            fd.write(toJSON(current_status, indent=4))
+        exit(0)
+
+
+if __name__ == '__main__':
+    main()
